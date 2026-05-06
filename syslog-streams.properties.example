@@ -1,0 +1,36 @@
+application.id=syslog-ng-configurable-poc
+bootstrap.servers=localhost:9092
+schema.registry.url=http://localhost:8081
+source.topic=syslog_ng.QUAN.reparse.avro
+default.match.field=rawMessage
+default.match.type=contains
+default.ignore.case=false
+log.incoming.records=true
+
+# Independent fan-out rules. A single record can match multiple rules.
+
+rule.infoblox.topic=syslog_ng.QUAN.infoblox.test
+rule.infoblox.patterns=netauto_
+rule.infoblox.field=rawMessage
+rule.infoblox.matchType=contains
+rule.infoblox.mode=include
+
+rule.security.topic=syslog_ng.QUAN.filtered.test
+rule.security.patterns=sshd,LOGIN,AUTH_FAIL
+rule.security.field=rawMessage
+rule.security.matchType=contains
+rule.security.mode=include
+rule.security.ignoreCase=false
+
+rule.default.topic=syslog_ng.QUAN.final.test
+rule.default.patterns=netauto_
+rule.default.field=rawMessage
+rule.default.matchType=contains
+rule.default.mode=exclude
+
+# Example regex rule:
+# rule.hostname.topic=syslog_ng.QUAN.hostname-alerts.test
+# rule.hostname.patterns=^host\\d+-prod
+# rule.hostname.field=rawMessage
+# rule.hostname.matchType=regex
+# rule.hostname.mode=include
