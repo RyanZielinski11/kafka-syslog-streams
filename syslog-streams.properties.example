@@ -1,36 +1,48 @@
 application.id=syslog-ng-configurable-poc
 bootstrap.servers=localhost:9092
 schema.registry.url=http://localhost:8081
-source.topic=syslog_ng.QUAN.reparse.avro
+source.topic=syslog_ng.QUAN.syslog.raw.avro
 default.match.field=rawMessage
 default.match.type=contains
 default.ignore.case=false
 log.incoming.records=true
 
-# Independent fan-out rules. A single record can match multiple rules.
+# Each stage reads from `source` or from another stage name.
+# A record can still fan out to multiple stages from the same parent.
 
-rule.infoblox.topic=syslog_ng.QUAN.infoblox.test
-rule.infoblox.patterns=netauto_
-rule.infoblox.field=rawMessage
-rule.infoblox.matchType=contains
-rule.infoblox.mode=include
+stage.infoblox.input=source
+stage.infoblox.topic=syslog_ng.QUAN.infoblox.avro
+stage.infoblox.patterns=netauto_
+stage.infoblox.field=rawMessage
+stage.infoblox.matchType=contains
+stage.infoblox.mode=include
 
-rule.security.topic=syslog_ng.QUAN.filtered.test
-rule.security.patterns=sshd,LOGIN,AUTH_FAIL
-rule.security.field=rawMessage
-rule.security.matchType=contains
-rule.security.mode=include
-rule.security.ignoreCase=false
+stage.filtered.input=source
+stage.filtered.topic=syslog_ng.QUAN.filtered.avro
+stage.filtered.patterns=PRIV_AUTH_PASS,LOGGEDCMD,SEC_LOGIN,LOGOUT,BADAUTH,Security[,SSH2_SESSION,SSH2_USERAUTH,SSH_CLOSE,SSH2_CLOSE,TLS_CONNECTION,SIP-3-INTERNAL,VSHD,USER_MGR,tmsh,httpd,sshd,BUFCAP,WEBUI,WEBSERVER,WEBLOGIN,CONFIG_P,pam_audit,AUTH_FAIL,UI_AUTH_EVENT,UI_LOGIN_EVENT,UI_CMDLINE_READ_LINE,UI_JUNOSCRIPT_CMD,NO_MATCH,EXEC_WEXIT,openvpn-member,CISE_,CRYPTO-5-IKEV2_SESSION_STATUS,IKEV2,DMVPN-5-,VBOND
+stage.filtered.field=rawMessage
+stage.filtered.matchType=contains
+stage.filtered.mode=include
 
-rule.default.topic=syslog_ng.QUAN.final.test
-rule.default.patterns=netauto_
-rule.default.field=rawMessage
-rule.default.matchType=contains
-rule.default.mode=exclude
+stage.final.input=source
+stage.final.topic=syslog_ng.QUAN.final.avro
+stage.final.patterns=netauto_
+stage.final.field=rawMessage
+stage.final.matchType=contains
+stage.final.mode=exclude
 
-# Example regex rule:
-# rule.hostname.topic=syslog_ng.QUAN.hostname-alerts.test
-# rule.hostname.patterns=^host\\d+-prod
-# rule.hostname.field=rawMessage
-# rule.hostname.matchType=regex
-# rule.hostname.mode=include
+stage.sdwan.initial.input=source
+stage.sdwan.initial.topic=syslog_ng.QUAN.sdwan.initial.avro
+stage.sdwan.initial.patterns=QUAN-USW-MA-01,PNDL-USW-MA-01,QUAN-USW-VB-01,PNDL-USW-VB-01,FSTR-USW-SM-01,PNDL-USW-SM-01,QUAN-USW-SM-01
+stage.sdwan.initial.field=rawMessage
+stage.sdwan.initial.matchType=contains
+stage.sdwan.initial.mode=include
+
+stage.sdwan.bdp.input=sdwan.initial
+stage.sdwan.bdp.topic=syslog_ng.QUAN.sdwan.BDP.avro
+stage.sdwan.bdp.patterns=basic,confd,java,python3,sshd,SYSMGR,VCONFD_NOTIFIER,VDAEMON,vbond,OMPD
+stage.sdwan.bdp.field=rawMessage
+stage.sdwan.bdp.matchType=contains
+stage.sdwan.bdp.mode=include
+
+# Legacy flat `rule.<name>.*` entries are still supported and behave as source-based stages.

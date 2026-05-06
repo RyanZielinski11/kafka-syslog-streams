@@ -1,11 +1,12 @@
 # syslog-ng-streams
 
-Configurable Kafka Streams router for Avro-backed syslog events. The app consumes one source topic, evaluates a set of independent rules, and republishes matching records to one or more downstream topics without changing the Avro payload.
+Configurable Kafka Streams router for Avro-backed syslog events. The app consumes one source topic, evaluates named stages, and republishes matching records to one or more downstream topics without changing the Avro payload.
 
 ## Current capabilities
 
 - reads Avro records from a configured source topic using Schema Registry
-- evaluates rules independently, so one event can fan out to multiple topics
+- evaluates stages independently, so one event can fan out to multiple topics
+- supports multi-stage pipelines where one stage reads from another stage
 - supports configurable field lookup such as `rawMessage`
 - supports `contains` and `regex` matching
 - supports positive routing with `mode=include`
@@ -31,33 +32,40 @@ Optional top-level properties:
 - `default.ignore.case`
 - `log.incoming.records`
 
-Each rule is defined with a `rule.<name>.*` prefix.
+Each stage is defined with a `stage.<name>.*` prefix.
 
-Required rule properties:
+Required stage properties:
 
-- `rule.<name>.topic`
-- `rule.<name>.patterns`
+- `stage.<name>.topic`
+- `stage.<name>.patterns`
 
-Optional rule properties:
+Optional stage properties:
 
-- `rule.<name>.field`
-- `rule.<name>.matchType`
-- `rule.<name>.mode`
-- `rule.<name>.ignoreCase`
-- `rule.<name>.enabled`
-- `rule.<name>.requireAllPatterns`
+- `stage.<name>.input`
+- `stage.<name>.field`
+- `stage.<name>.matchType`
+- `stage.<name>.mode`
+- `stage.<name>.ignoreCase`
+- `stage.<name>.enabled`
+- `stage.<name>.requireAllPatterns`
+
+`stage.<name>.input` defaults to `source`. Set it to another stage name to build a chained pipeline.
+
+Legacy `rule.<name>.*` entries are still supported and behave like source-based stages.
 
 Example config lives in [syslog-streams.properties.example](/Users/ryanzielinski/syslog-ng-streams/syslog-streams.properties.example).
 
 ## Example behavior
 
-These three rules reproduce the current rough behavior:
+These stages reproduce the current KSQL-style behavior:
 
 - `infoblox`: include records where `rawMessage` contains `netauto_`
 - `security`: include records where `rawMessage` contains `sshd`, `LOGIN`, or `AUTH_FAIL`
 - `default`: exclude records where `rawMessage` contains `netauto_`
+- `sdwan.initial`: include records matching the configured device names
+- `sdwan.bdp`: read from `sdwan.initial` and include BDP-related patterns
 
-Because rules are evaluated independently, a record can be written to more than one output topic.
+Because stages are evaluated independently, a record can be written to more than one output topic. Chained stages let one filtered branch feed another, which is the piece needed for flows like `source -> sdwan.initial -> sdwan.bdp`.
 
 ## Build
 

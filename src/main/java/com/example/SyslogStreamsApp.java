@@ -7,6 +7,8 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -31,6 +33,7 @@ public class SyslogStreamsApp {
 
     private static final String DEFAULT_CONFIG_FILE = "syslog-streams.properties";
     private static final String DEFAULT_MATCH_FIELD = "rawMessage";
+    private static final String SOURCE_STAGE = "source";
 
     public static void main(String[] args) throws IOException {
         String configFile = args.length > 0 ? args[0] : DEFAULT_CONFIG_FILE;
@@ -51,21 +54,31 @@ public class SyslogStreamsApp {
         logStartup(configFile, config);
 
         StreamsBuilder builder = new StreamsBuilder();
-        KStream<String, GenericRecord> syslog =
+        KStream<String, GenericRecord> sourceStream =
             builder.stream(config.sourceTopic, Consumed.with(Serdes.String(), valueSerde));
 
         if (config.logIncomingRecords) {
-            syslog.peek((key, value) -> {
+            sourceStream.peek((key, value) -> {
                 if (value != null) {
                     System.out.println("RECEIVED: " + value);
                 }
             });
         }
 
-        for (FilterRule rule : config.rules) {
-            syslog.filter((key, value) -> rule.matches(value))
-                .to(rule.outputTopic, Produced.with(Serdes.String(), valueSerde));
-            System.out.println("Rule loaded: " + rule.describe());
+        Map<String, RouteStage> stagesByName = config.stages.stream()
+            .collect(Collectors.toMap(
+                stage -> stage.name,
+                stage -> stage,
+                (left, right) -> {
+                    throw new IllegalArgumentException("Duplicate stage name: " + left.name);
+                },
+                LinkedHashMap::new
+            ));
+
+        Map<String, KStream<String, GenericRecord>> builtStages = new HashMap<>();
+        Set<String> visiting = new HashSet<>();
+        for (RouteStage stage : config.stages) {
+            materializeStage(stage.name, stagesByName, builtStages, visiting, sourceStream, valueSerde);
         }
 
         KafkaStreams streams = new KafkaStreams(builder.build(), streamProperties);
@@ -76,6 +89,43 @@ public class SyslogStreamsApp {
         streams.start();
 
         Runtime.getRuntime().addShutdownHook(new Thread(streams::close));
+    }
+
+    private static KStream<String, GenericRecord> materializeStage(
+        String stageName,
+        Map<String, RouteStage> stagesByName,
+        Map<String, KStream<String, GenericRecord>> builtStages,
+        Set<String> visiting,
+        KStream<String, GenericRecord> sourceStream,
+        GenericAvroSerde valueSerde
+    ) {
+        KStream<String, GenericRecord> existing = builtStages.get(stageName);
+        if (existing != null) {
+            return existing;
+        }
+
+        if (!visiting.add(stageName)) {
+            throw new IllegalArgumentException("Cycle detected in stage definitions around " + stageName);
+        }
+
+        RouteStage stage = stagesByName.get(stageName);
+        if (stage == null) {
+            throw new IllegalArgumentException("Unknown stage referenced as input: " + stageName);
+        }
+
+        KStream<String, GenericRecord> parentStream = SOURCE_STAGE.equals(stage.inputStage)
+            ? sourceStream
+            : materializeStage(stage.inputStage, stagesByName, builtStages, visiting, sourceStream, valueSerde);
+
+        KStream<String, GenericRecord> stageStream = parentStream
+            .filter((key, value) -> stage.matches(value));
+
+        stageStream.to(stage.outputTopic, Produced.with(Serdes.String(), valueSerde));
+        builtStages.put(stageName, stageStream);
+        visiting.remove(stageName);
+
+        System.out.println("Stage loaded: " + stage.describe());
+        return stageStream;
     }
 
     private static Properties loadConfig(String configFile) throws IOException {
@@ -94,7 +144,7 @@ public class SyslogStreamsApp {
         System.out.println("Application ID: " + config.applicationId);
         System.out.println("Source topic: " + config.sourceTopic);
         System.out.println("Schema Registry URL: " + config.schemaRegistryUrl);
-        System.out.println("Loaded rules: " + config.rules.size());
+        System.out.println("Loaded stages: " + config.stages.size());
     }
 
     private static String required(Properties props, String key) {
@@ -117,22 +167,22 @@ public class SyslogStreamsApp {
             .collect(Collectors.toList());
     }
 
-    private static Set<String> detectRuleNames(Properties props) {
-        Set<String> ruleNames = new TreeSet<>();
+    private static Set<String> detectNames(Properties props, String prefix) {
+        Set<String> names = new TreeSet<>();
 
         for (String key : props.stringPropertyNames()) {
-            if (!key.startsWith("rule.")) {
+            if (!key.startsWith(prefix)) {
                 continue;
             }
 
-            String suffix = key.substring("rule.".length());
+            String suffix = key.substring(prefix.length());
             int separatorIndex = suffix.indexOf('.');
             if (separatorIndex > 0) {
-                ruleNames.add(suffix.substring(0, separatorIndex));
+                names.add(suffix.substring(0, separatorIndex));
             }
         }
 
-        return ruleNames;
+        return names;
     }
 
     private static Object resolveField(GenericRecord record, String fieldPath) {
@@ -177,7 +227,7 @@ public class SyslogStreamsApp {
         private final String schemaRegistryUrl;
         private final String sourceTopic;
         private final boolean logIncomingRecords;
-        private final List<FilterRule> rules;
+        private final List<RouteStage> stages;
 
         private AppConfig(
             String applicationId,
@@ -185,14 +235,14 @@ public class SyslogStreamsApp {
             String schemaRegistryUrl,
             String sourceTopic,
             boolean logIncomingRecords,
-            List<FilterRule> rules
+            List<RouteStage> stages
         ) {
             this.applicationId = applicationId;
             this.bootstrapServers = bootstrapServers;
             this.schemaRegistryUrl = schemaRegistryUrl;
             this.sourceTopic = sourceTopic;
             this.logIncomingRecords = logIncomingRecords;
-            this.rules = rules;
+            this.stages = stages;
         }
 
         private static AppConfig from(Properties props) {
@@ -203,10 +253,10 @@ public class SyslogStreamsApp {
             boolean logIncomingRecords = Boolean.parseBoolean(
                 props.getProperty("log.incoming.records", "true"));
 
-            List<FilterRule> rules = loadRules(props);
-            if (rules.isEmpty()) {
+            List<RouteStage> stages = loadStages(props);
+            if (stages.isEmpty()) {
                 throw new IllegalArgumentException(
-                    "No filter rules found. Add rules like rule.infoblox.patterns=netauto_");
+                    "No stages found. Add stage definitions like stage.security.topic=...");
             }
 
             return new AppConfig(
@@ -215,11 +265,11 @@ public class SyslogStreamsApp {
                 schemaRegistryUrl,
                 sourceTopic,
                 logIncomingRecords,
-                rules
+                stages
             );
         }
 
-        private static List<FilterRule> loadRules(Properties props) {
+        private static List<RouteStage> loadStages(Properties props) {
             String defaultField = props.getProperty("default.match.field", DEFAULT_MATCH_FIELD).trim();
             MatchType defaultMatchType = MatchType.valueOf(
                 props.getProperty("default.match.type", MatchType.CONTAINS.name()).trim()
@@ -227,79 +277,130 @@ public class SyslogStreamsApp {
             boolean defaultIgnoreCase = Boolean.parseBoolean(
                 props.getProperty("default.ignore.case", "false"));
 
-            List<FilterRule> rules = new ArrayList<>();
-            for (String ruleName : detectRuleNames(props)) {
-                String outputTopic = required(props, "rule." + ruleName + ".topic");
-                String field = props.getProperty("rule." + ruleName + ".field", defaultField).trim();
-                MatchType matchType = MatchType.valueOf(
-                    props.getProperty("rule." + ruleName + ".matchType", defaultMatchType.name()).trim()
-                        .toUpperCase(Locale.ROOT));
-                MatchMode mode = MatchMode.valueOf(
-                    props.getProperty("rule." + ruleName + ".mode", MatchMode.INCLUDE.name()).trim()
-                        .toUpperCase(Locale.ROOT));
-                boolean ignoreCase = Boolean.parseBoolean(
-                    props.getProperty("rule." + ruleName + ".ignoreCase",
-                        Boolean.toString(defaultIgnoreCase)));
-                boolean enabled = Boolean.parseBoolean(
-                    props.getProperty("rule." + ruleName + ".enabled", "true"));
-                boolean requireAllPatterns = Boolean.parseBoolean(
-                    props.getProperty("rule." + ruleName + ".requireAllPatterns", "false"));
+            List<RouteStage> stages = new ArrayList<>();
+            Set<String> usedNames = new HashSet<>();
 
-                List<String> patterns = parseList(required(props, "rule." + ruleName + ".patterns"));
-                if (patterns.isEmpty()) {
-                    throw new IllegalArgumentException(
-                        "Rule " + ruleName + " must define at least one non-empty pattern.");
+            for (String stageName : detectNames(props, "stage.")) {
+                RouteStage stage = loadStage(
+                    props,
+                    "stage.",
+                    stageName,
+                    defaultField,
+                    defaultMatchType,
+                    defaultIgnoreCase,
+                    false
+                );
+
+                if (stage != null && usedNames.add(stage.name)) {
+                    stages.add(stage);
                 }
-
-                rules.add(new FilterRule(
-                    ruleName,
-                    field,
-                    outputTopic,
-                    matchType,
-                    mode,
-                    ignoreCase,
-                    enabled,
-                    requireAllPatterns,
-                    patterns
-                ));
             }
 
-            return rules.stream()
-                .filter(rule -> rule.enabled)
-                .collect(Collectors.toList());
+            for (String legacyRuleName : detectNames(props, "rule.")) {
+                RouteStage stage = loadStage(
+                    props,
+                    "rule.",
+                    legacyRuleName,
+                    defaultField,
+                    defaultMatchType,
+                    defaultIgnoreCase,
+                    true
+                );
+
+                if (stage != null) {
+                    if (!usedNames.add(stage.name)) {
+                        throw new IllegalArgumentException(
+                            "Stage name conflict between stage.* and rule.* for " + stage.name);
+                    }
+                    stages.add(stage);
+                }
+            }
+
+            return stages;
+        }
+
+        private static RouteStage loadStage(
+            Properties props,
+            String prefix,
+            String name,
+            String defaultField,
+            MatchType defaultMatchType,
+            boolean defaultIgnoreCase,
+            boolean legacyRule
+        ) {
+            String propertyBase = prefix + name + ".";
+            boolean enabled = Boolean.parseBoolean(
+                props.getProperty(propertyBase + "enabled", "true"));
+            if (!enabled) {
+                return null;
+            }
+
+            String outputTopic = required(props, propertyBase + "topic");
+            String field = props.getProperty(propertyBase + "field", defaultField).trim();
+            MatchType matchType = MatchType.valueOf(
+                props.getProperty(propertyBase + "matchType", defaultMatchType.name()).trim()
+                    .toUpperCase(Locale.ROOT));
+            MatchMode mode = MatchMode.valueOf(
+                props.getProperty(propertyBase + "mode", MatchMode.INCLUDE.name()).trim()
+                    .toUpperCase(Locale.ROOT));
+            boolean ignoreCase = Boolean.parseBoolean(
+                props.getProperty(propertyBase + "ignoreCase", Boolean.toString(defaultIgnoreCase)));
+            boolean requireAllPatterns = Boolean.parseBoolean(
+                props.getProperty(propertyBase + "requireAllPatterns", "false"));
+            String inputStage = legacyRule
+                ? SOURCE_STAGE
+                : props.getProperty(propertyBase + "input", SOURCE_STAGE).trim();
+
+            List<String> patterns = parseList(required(props, propertyBase + "patterns"));
+            if (patterns.isEmpty()) {
+                throw new IllegalArgumentException(
+                    "Stage " + name + " must define at least one non-empty pattern.");
+            }
+
+            return new RouteStage(
+                name,
+                inputStage,
+                field,
+                outputTopic,
+                matchType,
+                mode,
+                ignoreCase,
+                requireAllPatterns,
+                patterns
+            );
         }
     }
 
-    private static final class FilterRule {
+    private static final class RouteStage {
         private final String name;
+        private final String inputStage;
         private final String fieldPath;
         private final String outputTopic;
         private final MatchType matchType;
         private final MatchMode mode;
         private final boolean ignoreCase;
-        private final boolean enabled;
         private final boolean requireAllPatterns;
         private final List<String> rawPatterns;
         private final List<Pattern> compiledPatterns;
 
-        private FilterRule(
+        private RouteStage(
             String name,
+            String inputStage,
             String fieldPath,
             String outputTopic,
             MatchType matchType,
             MatchMode mode,
             boolean ignoreCase,
-            boolean enabled,
             boolean requireAllPatterns,
             List<String> rawPatterns
         ) {
             this.name = name;
+            this.inputStage = inputStage;
             this.fieldPath = fieldPath;
             this.outputTopic = outputTopic;
             this.matchType = matchType;
             this.mode = mode;
             this.ignoreCase = ignoreCase;
-            this.enabled = enabled;
             this.requireAllPatterns = requireAllPatterns;
             this.rawPatterns = List.copyOf(rawPatterns);
             this.compiledPatterns = compilePatterns(rawPatterns, matchType, ignoreCase);
@@ -325,6 +426,7 @@ public class SyslogStreamsApp {
 
         private String describe() {
             return name
+                + " input=" + inputStage
                 + " field=" + fieldPath
                 + " type=" + matchType
                 + " mode=" + mode
