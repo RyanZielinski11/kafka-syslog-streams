@@ -1,6 +1,6 @@
 application.id=syslog-ng-configurable-poc
-bootstrap.servers=localhost:9092
-schema.registry.url=http://localhost:8081
+bootstrap.servers=nentkdquanps010:9091
+schema.registry.url=https://nentkuquanps011:8081
 source.topic=syslog_ng.QUAN.syslog.raw.avro
 default.match.field=rawMessage
 default.match.type=contains
@@ -11,35 +11,35 @@ log.incoming.records=true
 # A record can still fan out to multiple stages from the same parent.
 
 stage.infoblox.input=source
-stage.infoblox.topic=syslog_ng.QUAN.infoblox.avro
+stage.infoblox.topic=syslog_ng.QUAN.infoblox.avro.test
 stage.infoblox.patterns=netauto_
 stage.infoblox.field=rawMessage
 stage.infoblox.matchType=contains
 stage.infoblox.mode=include
 
 stage.filtered.input=source
-stage.filtered.topic=syslog_ng.QUAN.filtered.avro
+stage.filtered.topic=syslog_ng.QUAN.filtered.avro.test
 stage.filtered.patterns=PRIV_AUTH_PASS,LOGGEDCMD,SEC_LOGIN,LOGOUT,BADAUTH,Security[,SSH2_SESSION,SSH2_USERAUTH,SSH_CLOSE,SSH2_CLOSE,TLS_CONNECTION,SIP-3-INTERNAL,VSHD,USER_MGR,tmsh,httpd,sshd,BUFCAP,WEBUI,WEBSERVER,WEBLOGIN,CONFIG_P,pam_audit,AUTH_FAIL,UI_AUTH_EVENT,UI_LOGIN_EVENT,UI_CMDLINE_READ_LINE,UI_JUNOSCRIPT_CMD,NO_MATCH,EXEC_WEXIT,openvpn-member,CISE_,CRYPTO-5-IKEV2_SESSION_STATUS,IKEV2,DMVPN-5-,VBOND
 stage.filtered.field=rawMessage
 stage.filtered.matchType=contains
 stage.filtered.mode=include
 
 stage.final.input=source
-stage.final.topic=syslog_ng.QUAN.final.avro
+stage.final.topic=syslog_ng.QUAN.final.avro.test
 stage.final.patterns=netauto_
 stage.final.field=rawMessage
 stage.final.matchType=contains
 stage.final.mode=exclude
 
 stage.sdwan.initial.input=source
-stage.sdwan.initial.topic=syslog_ng.QUAN.sdwan.initial.avro
+stage.sdwan.initial.topic=syslog_ng.QUAN.sdwan.initial.avro.test
 stage.sdwan.initial.patterns=QUAN-USW-MA-01,PNDL-USW-MA-01,QUAN-USW-VB-01,PNDL-USW-VB-01,FSTR-USW-SM-01,PNDL-USW-SM-01,QUAN-USW-SM-01
 stage.sdwan.initial.field=rawMessage
 stage.sdwan.initial.matchType=contains
 stage.sdwan.initial.mode=include
 
 stage.sdwan.bdp.input=sdwan.initial
-stage.sdwan.bdp.topic=syslog_ng.QUAN.sdwan.BDP.avro
+stage.sdwan.bdp.topic=syslog_ng.QUAN.sdwan.BDP.avro.test
 stage.sdwan.bdp.patterns=basic,confd,java,python3,sshd,SYSMGR,VCONFD_NOTIFIER,VDAEMON,vbond,OMPD
 stage.sdwan.bdp.field=rawMessage
 stage.sdwan.bdp.matchType=contains

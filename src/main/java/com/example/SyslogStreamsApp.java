@@ -176,7 +176,7 @@ public class SyslogStreamsApp {
             }
 
             String suffix = key.substring(prefix.length());
-            int separatorIndex = suffix.indexOf('.');
+            int separatorIndex = suffix.lastIndexOf('.');
             if (separatorIndex > 0) {
                 names.add(suffix.substring(0, separatorIndex));
             }
